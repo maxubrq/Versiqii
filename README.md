@@ -1,8 +1,8 @@
 # Versiqii
 
-**Version‑Aware Configuration Management (VACM) for multi‑engine, multi‑region platforms**
+**Universal Version‑Aware Configuration Management (VACM)** for any component that ships with a version number — micro‑services, DB schemas, ML models, front‑end bundles, you name it.
 
-> *Shift configurations without drift* — keep every engine instance in every region perfectly in‑sync with the schema version it expects.
+> *Shift versions without drift* — map, validate & migrate every config so it always matches the exact version (and dependencies) it is deployed with.
 
 ---
 
@@ -10,6 +10,7 @@
 
 * [Why Versiqii?](#why-versiqii)
 * [Key Features](#key-features)
+* [Core Concepts](#core-concepts)
 * [Architecture Overview](#architecture-overview)
 * [Quick Start](#quick-start)
 * [CLI Usage](#cli-usage)
@@ -23,28 +24,46 @@
 
 ## Why Versiqii?
 
-Modern platforms often run **multiple scan engines** (AV, ML, AI, …), each with its own **versioned schema** and **region‑specific deployment**. When an engine upgrades, *configs drift* and scans fail.
+Modern platforms are a **matrix of versions**: micro‑services, databases, function runtimes, ML models… each moving at its own cadence. A single upgrade can break configs, schema contracts, or downstream dependencies.
 
-**Versiqii** solves this by acting as a **control‑plane service** that:
+**Versiqii** acts as the **control‑plane** that normalises this chaos:
 
-1. Tracks every engine & schema version across regions.
-2. Validates configs against the *right* JSON‑Schema before runtime.
-3. Applies on‑the‑fly migrations (WASM) to eliminate drift.
-4. Audits every change for easy rollback & compliance.
+1. **Discovers** every *Target* (anything with a `version`) across all environments.
+2. **Normalises** each Target into a *Target Family* with a JSON‑Schema (or Avro/Protobuf) contract.
+3. **Tracks** a *VersionGraph* to understand cross‑component dependencies.
+4. **Binds & Validates** configs at deploy time — blocking drifts before they hit prod.
+5. **Migrates** configs automatically (WASM/Lua scripts) when versions shift.
+6. **Audits & Rolls Back** in one call when things go south.
 
-> Stop copy‑pasting YAML, start shipping versions safely.
+> From Terraform plans to feature flags, Versiqii keeps every file compatible with the version that will actually run.
 
 ---
 
 ## Key Features
 
-* **Schema Registry** – draft‑2020‑12 JSON‑Schema with evolution rules (back/forward compatibility flags).
-* **Immutable Config Store** – every change = new record, full history & diff.
-* **Automatic Drift Detector** – sidecar compares running schema ↔ stored binding.
-* **WASM Migration Runtime** – hot‑plug scripts to upgrade/downgrade configs safely.
-* **Cross‑Region Mapper** – transforms user scan configs to the destination region’s engine version transparently.
-* **Audit & Rollback** – tamper‑proof event log, single‑call rollback.
-* **Typed SDKs** – client generators for Rust, Go, Node, Python.
+| Category                   | What it does                                                                              |
+| -------------------------- | ----------------------------------------------------------------------------------------- |
+| **Schema Registry**        | Draft‑2020‑12 JSON‑Schema (plus Avro/Proto) with evolution metadata.                      |
+| **VersionGraph**           | DAG of Target Versions and their dependency constraints (`requires`, `accepts`).          |
+| **Immutable Config Store** | Write‑once, append‑only history with Git‑style diff.                                      |
+| **Drift Matrix**           | Multi‑dimensional view (Target, Schema, Dependency, Environment) with Prometheus metrics. |
+| **WASM Migration Runtime** | Sandboxed scripts to upgrade/downgrade configs on the fly.                                |
+| **GitOps Plugins**         | FluxCD / Argo CD integrations: `versiqii-validate` gate in your pipeline.                 |
+| **Typed SDKs**             | Rust · Go · Node · Python clients auto‑generated from OpenAPI/gRPC.                       |
+| **Audit & Policy**         | OPA/Casbin rules, event log, one‑click rollback.                                          |
+
+---
+
+## Core Concepts
+
+| Term                | Description                                  | Example                                                    |
+| ------------------- | -------------------------------------------- | ---------------------------------------------------------- |
+| **Target**          | Anything that has a `version` & a schema     | `payment‑service`, `feature‑flag‑api`, `ml‑model@resnet50` |
+| **Target Family**   | Group of Targets sharing one schema language | `OpenAPI‑Payments`, `Avro‑OrderFeed`                       |
+| **Target Version**  | Concrete version (`semver`, `git‑sha`, date) | `api@3.2.1`, `db@14`, `frontend@2025‑07‑03`                |
+| **Config Instance** | Immutable JSON/YAML/Proto payload            | `payment‑service.yaml`                                     |
+| **Binding**         | Links Config ▶ Environment ▶ TargetVersion   | `payment‑service.yaml` → `prod/eu‑fr` @ `api@3.2.1`        |
+| **VersionGraph**    | DAG of TargetVersion dependencies            | `auth@1.5 → api@3.2`                                       |
 
 ---
 
@@ -52,62 +71,63 @@ Modern platforms often run **multiple scan engines** (AV, ML, AI, …), each wit
 
 ```mermaid
 flowchart TB
-    subgraph Control-Plane
-        SR[Schema Registry]
-        CS[Config Store]
-        MS[Migration Service]
-        AG[API Gateway]
+    subgraph Control‑Plane
+        SR[Schema Registry]
+        CS[Config Store]
+        VG[VersionGraph Service]
+        MS[Migration Service]
+        AG[API Gateway]
         SR --> AG
         CS --> AG
+        VG --> AG
         MS --> CS
     end
 
-    subgraph Region[X]
-        RT[Engine Runtime]
-        DD[Drift Detector]
+    subgraph Env[Environment / Cluster]
+        DV[Deployment Validator]
     end
 
-    AG -- stream --> DD
-    DD -- validated config --> RT
-    DD -- drift event --> MS
+    AG -- stream --> DV
+    DV -- validated config --> Deployer
+    DV -- drift event --> MS
 ```
 
-* **Control‑Plane** is single‑writer (CockroachDB multi‑region) – global source‑of‑truth.
-* **Data‑Plane** sidecar keeps runtime lightweight and fast.
+* **Control‑Plane** (single writer, multi‑region CockroachDB) — source‑of‑truth.
+* **Deployment Validator** runs as a sidecar or admission webhook in each cluster.
 
-See the full [docs/architecture.md](docs/architecture.md) for sequence diagrams and data models.
+More diagrams in [docs/architecture.md](docs/architecture.md).
 
 ---
 
 ## Quick Start
 
-### 1. Clone & Build
+\### 1. Clone & Build
 
 ```bash
 git clone https://github.com/your‑org/versiqii.git
 cd versiqii
-make dev  # spins up Postgres, NATS & the service
+make dev  # spins up CockroachDB, NATS & the service
 ```
 
 > Requires **Rust 1.79+**, **Docker 24+**, and **make**.
 
-### 2. Run Hello World
+\### 2. Hello World
 
 ```bash
-# Register a schema
-target/debug/versiqii schemas add --type scan --version 1.0.0 ./examples/schema_scan_v1.json
+# Register a Target Family schema
+versiqii schemas add --family OpenAPI‑Payments --version 2025‑07 ./examples/openapi_payments.json
+
+# Declare a Target (micro‑service) & its version
+authTarget=$(versiqii targets create --name payment‑api --family OpenAPI‑Payments --version 3.2.1)
 
 # Store a config instance
-cat examples/scan_config_v1.json | target/debug/versiqii configs create --type scan --version 1.0.0 -
+cfgId=$(cat examples/payment_service.yaml | versiqii configs create --target $authTarget -)
 
-# Bind it to region "asia-sg" where engine v2.1.3 is deployed
- target/debug/versiqii bindings create \
-   --config-id 123e4567-e89b-12d3-a456-426614174000 \
-   --region asia-sg \
-   --engine-version 2.1.3
+# Bind to environment "prod‑eu" (auto‑validates & migrates)
+versiqii bindings create --config $cfgId --env prod‑eu
 ```
 
-### 3. Play With the API
+\### 3. See It in Action
 
 Open Swagger UI at [http://localhost:8080/docs](http://localhost:8080/docs) after `make dev`.
 
@@ -115,56 +135,60 @@ Open Swagger UI at [http://localhost:8080/docs](http://localhost:8080/docs) afte
 
 ## CLI Usage
 
-| Command              | Description                          |
-| -------------------- | ------------------------------------ |
-| `schemas add`        | Register / update a JSON‑Schema      |
-| `configs create`     | Create immutable config instance     |
-| `bindings create`    | Bind + auto‑migrate to region/engine |
-| `drifts list`        | List unmatched configs               |
-| `regions set-engine` | Change engine version for a region   |
+| Command           | Purpose                                          |
+| ----------------- | ------------------------------------------------ |
+| `schemas add`     | Register / update a schema (JSON, Avro, Proto)   |
+| `targets create`  | Declare a new Target & version                   |
+| `graphs link`     | Add dependency edge in VersionGraph              |
+| `configs create`  | Store immutable config instance                  |
+| `bindings create` | Bind + auto‑migrate to environment               |
+| `drifts list`     | Show drift matrix (all dimensions)               |
+| `env set‑target`  | Change deployed TargetVersion for an environment |
 
-Run `versiqii --help` for all options.
+Run `versiqii --help` for full options.
 
 ---
 
-## API Reference
+## API Reference
 
-REST + gRPC. Full OpenAPI spec lives in [`spec/openapi.yaml`](spec/openapi.yaml).
+OpenAPI + gRPC. Full spec lives in [`spec/openapi.yaml`](spec/openapi.yaml).
 
 ```http
-PUT /regions/{region}/engine-version
-GET /drifts?region=eu-fr&engine_ver=3.0.0
+POST /targets
+PUT  /envs/{env}/targets/{target}/version
+GET  /drifts?env=prod‑us&target=api
 ```
 
 ---
 
 ## Configuration Examples
 
-```jsonc
-// scan_config_v1.json
-{
-  "scan_depth": 3,
-  "timeout_ms": 5000,
-  "heuristics": {
-    "use_yara": true,
-    "max_rules": 32
-  }
-}
+```yaml
+# payment_service.yaml
+scan_depth: 3
+timeout_ms: 5000
+features:
+  use_heuristics: true
+  max_rules: 32
 ```
 
-Run `versiqii validate --file scan_config_v1.json` to check against the active schema.
+Validate locally:
+
+```bash
+versiqii validate --file payment_service.yaml --target payment‑api@3.2.1
+```
 
 ---
 
 ## Roadmap
 
-| Phase     | Highlights                                     | Target  |
-| --------- | ---------------------------------------------- | ------- |
-| 0.1 (MVP) | CRUD configs, schema validation, single region | 2025‑08 |
-| 0.2       | Drift detector, WASM migrator (upgrade)        | 2025‑09 |
-| 0.3       | Cross‑region mapper, multi‑region CRDB         | 2025‑10 |
-| 0.4       | Downgrade migrator, RBAC, UI dashboard         | 2025‑11 |
-| 1.0       | GA, SLA 99.9%, plugin SDK                      | 2026‑Q1 |
+| Phase                | Milestone                                    | Target Date |
+| -------------------- | -------------------------------------------- | ----------- |
+| **α (Core)**         | Schema & Target registry, single‑env binding | 2025‑08     |
+| **β (Drift Matrix)** | VersionGraph, Prom metrics                   | 2025‑09     |
+| **γ (Migration)**    | WASM runtime, upgrade scripts                | 2025‑10     |
+| **δ (GitOps)**       | FluxCD/Argo plugins, policy engine           | 2025‑11     |
+| **GA**               | Multi‑tenant SaaS, SLA 99.9%                 | 2026‑Q1     |
 
 ---
 
@@ -173,7 +197,7 @@ Run `versiqii validate --file scan_config_v1.json` to check against the active s
 We ❤️ pull requests! Please read [CONTRIBUTING.md](CONTRIBUTING.md) first.
 
 ```bash
-git checkout -b feat/awesome
+git checkout -b feat/amazing
 cargo test
 cargo fmt --check
 ```
@@ -188,4 +212,4 @@ Versiqii is licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) 
 
 ---
 
-> *Made with ☕ & Rust by the Versiqii team – shift safely, ship faster.*
+> *Made with ☕, Rust & a splash of version‑control magic by the Versiqii team — shift safely, ship faster.*
