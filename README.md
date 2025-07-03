@@ -71,7 +71,7 @@ Modern platforms are a **matrix of versions**: micro‑services, databases, func
 
 ```mermaid
 flowchart TB
-    subgraph Control‑Plane
+    subgraph "Control‑Plane"
         SR[Schema Registry]
         CS[Config Store]
         VG[VersionGraph Service]
